@@ -1,52 +1,114 @@
-emails = read.csv("emails.csv", stringsAsFactors=FALSE)
-
-## How many emails are in the dataset?
-nrow(emails)
-
-## How many of the emails are spam?
-sum(emails$spam)
-
-## Which word appears at the beginning of every email in the dataset? 
-## Respond as a lower-case word with punctuation removed.
-emails$text[1]
-
-## The nchar() function counts the number of characters in a piece of text. 
-## How many characters are in the longest email in the dataset (where longest is measured in terms of the maximum number of characters)?
-max(nchar(emails$text))
-
-## Which row contains the shortest email in the dataset? 
-## (Just like in the previous problem, shortest is measured in terms of the fewest number of characters.)
-emails$len = nchar(emails$text)
-which(emails$len == min(nchar(emails$text)))
-
-## How many terms are in dtm?
 library(tm)
 library(SnowballC)
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(ROCR)
+
+## Load the data wiki.csv, calling the data frame "wiki". Convert the "Vandal" column to a factor
+## How many cases of vandalism were detected in the history of this page?
+wiki = read.csv("wiki.csv", stringsAsFactors=FALSE)
+wiki$Vandal = as.factor(wiki$Vandal)
+sum(wiki$Vandal == 1)
+
+## Bags of Words
+## How many terms appear in dtmAdded?
 Sys.setlocale("LC_ALL", "C")
-corpus = VCorpus(VectorSource(emails$text)) 
-corpus = tm_map(corpus, content_transformer(tolower))
-corpus = tm_map(corpus, removePunctuation)
-corpus = tm_map(corpus, removeWords, stopwords("english"))
-corpus = tm_map(corpus, stemDocument)
+corpusAdded = VCorpus(VectorSource(wiki$Added))
+corpusAdded = tm_map(corpusAdded, removeWords, stopwords("english"))
+corpusAdded = tm_map(corpusAdded, stemDocument)
+dtmAdded = DocumentTermMatrix(corpusAdded)
 
-dtm = DocumentTermMatrix(corpus)
+## Filter out sparse terms by keeping only terms that appear in 0.3% or more of the revisions, and call the new matrix sparseAdded. 
+## How many terms appear in sparseAdded?
+sparseAdded = removeSparseTerms(dtmAdded, 0.997)
 
-## To obtain a more reasonable number of terms, limit dtm to contain terms appearing in at least 5% of documents, and store this result as 
-## spdtm (don't overwrite dtm, because we will use it in a later step of this homework). How many terms are in spdtm?
+## Convert sparseAdded to a data frame called wordsAdded, and then prepend all the words with the letter A
+wordsAdded = as.data.frame(as.matrix(sparseAdded))
+colnames(wordsAdded) = paste("A", colnames(wordsAdded))
 
-spdtm = removeSparseTerms(dtm, 0.95)
+## Now repeat all of the steps we've done so far (create a corpus, remove stop words, stem the document, create a sparse document 
+## term matrix, and convert it to a data frame) to create a Removed bag-of-words dataframe, called wordsRemoved, except this time, 
+## prepend all of the words with the letter R. How many words are in the wordsRemoved data frame?
+Sys.setlocale("LC_ALL", "C")
+corpusRemoved = VCorpus(VectorSource(wiki$Removed))
+corpusRemoved = tm_map(corpusRemoved, removeWords, stopwords("english"))
+corpusRemoved = tm_map(corpusRemoved, stemDocument)
+dtmRemoved = DocumentTermMatrix(corpusRemoved)
+sparseRemoved = removeSparseTerms(dtmRemoved, 0.997)
 
-## Build a data frame called emailsSparse from spdtm, and use the make.names function to make the variable names of emailsSparse valid.
-emailsSparse = as.data.frame(as.matrix(spdtm))
-colnames(emailsSparse) = make.names(colnames(emailsSparse))
+wordsRemoved = as.data.frame(as.matrix(sparseRemoved))
+colnames(wordsRemoved) = paste("R", colnames(wordsRemoved))
 
-## What is the word stem that shows up most frequently across all the emails in the dataset?
-sort(colSums(emailsSparse))
+ncol(wordsRemoved)
 
-## Add a variable called "spam" to emailsSparse containing the email spam labels
-## How many word stems appear at least 5000 times in the ham emails in the dataset?
-emailsSparse$spam = emails$spam
-sum(sort(colSums(subset(emailsSparse, spam == 0))) > 5000)
+## What is the accuracy on the test set of a baseline method that always predicts "not vandalism" (the most frequent outcome)?
+wikiWords = cbind(wordsAdded, wordsRemoved)
+wikiWords$Vandal = wiki$Vandal
 
-## How many word stems appear at least 1000 times in the spam emails in the dataset?
-sum(sort(colSums(subset(emailsSparse, spam == 1))) > 1000)
+set.seed(123)
+section = sample.split(wikiWords, SplitRatio = 0.7)
+train = subset(wikiWords, section == TRUE)
+test = subset(wikiWords, section == FALSE)
+
+table(test$Vandal)
+(622)/(622+542)
+
+## Build a CART model to predict Vandal, using all of the other variables as independent variables.
+## What is the accuracy of the model on the test set, using a threshold of 0.5?
+wikiCART = rpart(Vandal ~., data = train)
+wikiCART.pred = predict(wikiCART, newdata = test)
+
+a = table(test$Vandal, wikiCART.pred[,2] > 0.5)
+(a[1,1]+a[2,2])/sum(a) #accuracy
+
+## Plot the CART tree. How many word stems does the CART model use?
+rpart.plot(wikiCART)
+
+## Based on this new column, how many revisions added a link?
+wikiWords2 = wikiWords
+wikiWords2$HTTP = ifelse(grepl("http",wiki$Added,fixed=TRUE), 1, 0)
+sum(wikiWords2$HTTP)
+
+## What is the new accuracy of the CART model on the test set, using a threshold of 0.5?
+wikiTrain2 = subset(wikiWords2, section == TRUE)
+wikiTest2 = subset(wikiWords2, section == FALSE)
+
+wikiCART2 = rpart(Vandal ~ ., data = wikiTrain2)
+wikiCART2.pred = predict(wikiCART2, newdata = wikiTest2)
+rpart.plot(wikiCART2)
+
+a = table(wikiTest2$Vandal, wikiCART2.pred[,2] > 0.5)
+(a[1,1]+a[2,2])/sum(a) #accuracy
+
+## What is the average number of words added?
+wikiWords2$NumWordsAdded = rowSums(as.matrix(dtmAdded))
+wikiWords2$NumWordsRemoved = rowSums(as.matrix(dtmRemoved))
+mean(wikiWords2$NumWordsAdded)
+
+## 
+wikiTrain3 = subset(wikiWords2, section == TRUE)
+wikiTest3 = subset(wikiWords2, section == FALSE)
+
+wikiCART3 = rpart(Vandal ~ ., data = wikiTrain3)
+wikiCART3.pred = predict(wikiCART3, newdata = wikiTest3)
+rpart.plot(wikiCART3)
+
+a = table(wikiTest2$Vandal, wikiCART3.pred[,2] > 0.5)
+(a[1,1]+a[2,2])/sum(a) #accuracy
+
+## 
+wikiWords3 = wikiWords2
+wikiWords3$Minor = wiki$Minor
+wikiWords3$Loggedin = wiki$Loggedin
+
+wikiTrain4 = subset(wikiWords3, section == TRUE)
+wikiTest4 = subset(wikiWords3, section == FALSE)
+
+wikiCART4 = rpart(Vandal ~ ., data = wikiTrain4)
+wikiCART4.pred = predict(wikiCART4, newdata = wikiTest4)
+rpart.plot(wikiCART4)
+
+a = table(wikiTest2$Vandal, wikiCART4.pred[,2] > 0.5)
+(a[1,1]+a[2,2])/sum(a) #accuracy
